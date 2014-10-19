@@ -116,6 +116,8 @@ public class SessionAlarmService extends IntentService
     private static final String KEY_SESSION_ROOM = "session-room";
     public static final String PATH_FEEDBACK = "/iowear/feedback";
 
+    private static final String GROUP_KEY_NOTIFY_SESSION = "group_key_notify_session";
+
     // special session ID that identifies a debug notification
     public static final String DEBUG_SESSION_ID = "debug-session-id";
 
@@ -201,7 +203,7 @@ public class SessionAlarmService extends IntentService
     }
 
     public void scheduleFeedbackAlarm(final long sessionEnd,
-            final long alarmOffset, final String sessionTitle) {
+                                      final long alarmOffset, final String sessionTitle) {
         // By default, feedback alarms fire 5 minutes before session end time. If alarm offset is
         // provided, alarm is set to go off that much time from now (useful for testing).
         long alarmTime;
@@ -227,7 +229,7 @@ public class SessionAlarmService extends IntentService
     }
 
     private void scheduleAlarm(final long sessionStart,
-            final long sessionEnd, final long alarmOffset) {
+                               final long sessionEnd, final long alarmOffset) {
 
         NotificationManager nm =
                 (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
@@ -397,7 +399,7 @@ public class SessionAlarmService extends IntentService
      * local notification.
      */
     private void setupNotificationOnWear(String sessionId, String sessionRoom, String sessionName,
-            String speaker) {
+                                         String speaker) {
         if (!mGoogleApiClient.isConnected()) {
             Log.e(TAG, "setupNotificationOnWear(): Failed to send data item since there was no "
                     + "connectivity to Google API Client");
@@ -452,7 +454,7 @@ public class SessionAlarmService extends IntentService
 
         final ContentResolver cr = getContentResolver();
 
-        LOGD(TAG, "Looking for sessions in interval "  + sessionStart + " - " + intervalEnd);
+        LOGD(TAG, "Looking for sessions in interval " + sessionStart + " - " + intervalEnd);
         Cursor c = cr.query(
                 ScheduleContract.Sessions.CONTENT_MY_SCHEDULE_URI,
                 SessionDetailQuery.PROJECTION,
@@ -461,13 +463,13 @@ public class SessionAlarmService extends IntentService
                 null);
         int starredCount = c.getCount();
         LOGD(TAG, "# starred sessions in that interval: " + c.getCount());
-        String singleSessionId = null;
-        String singleSessionRoomId = null;
+        List<String> starredSessionIds = new ArrayList<String>();
         List<String> starredSessionTitles = new ArrayList<String>();
+        List<String> starredSessionRoomIds = new ArrayList<String>();
         List<String> starredSessionRoomNames = new ArrayList<String>();
         while (c.moveToNext()) {
-            singleSessionId = c.getString(SessionDetailQuery.SESSION_ID);
-            singleSessionRoomId = c.getString(SessionDetailQuery.ROOM_ID);
+            starredSessionIds.add(c.getString(SessionDetailQuery.SESSION_ID));
+            starredSessionRoomIds.add(c.getString(SessionDetailQuery.ROOM_ID));
             starredSessionTitles.add(c.getString(SessionDetailQuery.SESSION_TITLE));
             LOGD(TAG, "-> Title: " + c.getString(SessionDetailQuery.SESSION_TITLE));
 
@@ -486,88 +488,69 @@ public class SessionAlarmService extends IntentService
         // related to navigation from notifications.
         Intent baseIntent = new Intent(this, MyScheduleActivity.class);
         baseIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
-        TaskStackBuilder taskBuilder = TaskStackBuilder.create(this)
-                .addNextIntent(baseIntent);
 
-        // For a single session, tapping the notification should open the session details (b/15350787)
-        if (starredCount == 1) {
-            taskBuilder.addNextIntent(new Intent(Intent.ACTION_VIEW,
-                    ScheduleContract.Sessions.buildSessionUri(singleSessionId)));
-        }
-
-        PendingIntent pi = taskBuilder.getPendingIntent(0, PendingIntent.FLAG_CANCEL_CURRENT);
-
-        final Resources res = getResources();
-        String contentText;
-        int minutesLeft = (int) (sessionStart - currentTime + 59000) / 60000;
-        if (minutesLeft < 1) {
-            minutesLeft = 1;
-        }
-
-        if (starredCount == 1) {
-            contentText = res.getString(R.string.session_notification_text_1, minutesLeft);
-        } else {
-            contentText = res.getQuantityString(R.plurals.session_notification_text,
-                    starredCount - 1,
-                    minutesLeft,
-                    starredCount - 1);
-        }
-
-        NotificationCompat.Builder notifBuilder = new NotificationCompat.Builder(this)
-                .setContentTitle(starredSessionTitles.get(0))
-                .setContentText(contentText)
-                .setColor(getResources().getColor(R.color.theme_primary))
-                .setTicker(res.getQuantityString(R.plurals.session_notification_ticker,
-                        starredCount,
-                        starredCount))
-                .setDefaults(Notification.DEFAULT_SOUND | Notification.DEFAULT_VIBRATE)
-                .setLights(
-                        SessionAlarmService.NOTIFICATION_ARGB_COLOR,
-                        SessionAlarmService.NOTIFICATION_LED_ON_MS,
-                        SessionAlarmService.NOTIFICATION_LED_OFF_MS)
-                .setSmallIcon(R.drawable.ic_stat_notification)
-                .setContentIntent(pi)
-                .setPriority(Notification.PRIORITY_MAX)
-                .setAutoCancel(true);
-        if (minutesLeft > 5) {
-            notifBuilder.addAction(R.drawable.ic_alarm_holo_dark,
-                    String.format(res.getString(R.string.snooze_x_min), 5),
-                    createSnoozeIntent(sessionStart, intervalEnd, 5));
-        }
-        if (starredCount == 1 && PrefUtils.isAttendeeAtVenue(this)) {
-            notifBuilder.addAction(R.drawable.ic_map_holo_dark,
-                    res.getString(R.string.title_map),
-                    createRoomMapIntent(singleSessionRoomId));
-        }
-        String bigContentTitle;
-        if (starredCount == 1 && starredSessionTitles.size() > 0) {
-            bigContentTitle = starredSessionTitles.get(0);
-        } else {
-            bigContentTitle = res.getQuantityString(R.plurals.session_notification_title,
-                    starredCount,
-                    minutesLeft,
-                    starredCount);
-        }
-        NotificationCompat.InboxStyle richNotification = new NotificationCompat.InboxStyle(
-                notifBuilder)
-                .setBigContentTitle(bigContentTitle);
-        if (starredCount == 1 && starredSessionRoomNames.size() > 0) {
-            // Display only the room name given that the session name is already displayed on the notification title
-            richNotification.addLine(starredSessionRoomNames.get(0));
-        } else {
-            // Adds starred sessions starting at this time block to the notification.
-            for (int i = 0; i < starredCount; i++) {
-                richNotification.addLine(getString(R.string.room_session_notification, starredSessionRoomNames.get(i), starredSessionTitles.get(i)));
-            }
-        }
         NotificationManager nm = (NotificationManager) getSystemService(
                 Context.NOTIFICATION_SERVICE);
-        LOGD(TAG, "Now showing notification.");
-        nm.notify(NOTIFICATION_ID, richNotification.build());
+
+        for (int sessionIndex = 0; sessionIndex < starredCount; sessionIndex++) {
+            // For a single session, tapping the notification should open the session details (b/15350787)
+            TaskStackBuilder taskBuilder = TaskStackBuilder.create(this)
+                    .addNextIntent(baseIntent);
+            taskBuilder.addNextIntent(new Intent(Intent.ACTION_VIEW,
+                    ScheduleContract.Sessions.buildSessionUri(starredSessionIds.get(sessionIndex))));
+
+            PendingIntent pi = taskBuilder.getPendingIntent(0, PendingIntent.FLAG_CANCEL_CURRENT);
+
+            final Resources res = getResources();
+            String contentText;
+            int minutesLeft = (int) (sessionStart - currentTime + 59000) / 60000;
+            if (minutesLeft < 1) {
+                minutesLeft = 1;
+            }
+
+            contentText = res.getString(R.string.session_notification_text_1, minutesLeft);
+
+            NotificationCompat.Builder notifBuilder = new NotificationCompat.Builder(this)
+                    .setContentTitle(starredSessionTitles.get(0))
+                    .setContentText(contentText)
+                    .setColor(getResources().getColor(R.color.theme_primary))
+                    .setTicker(res.getQuantityString(R.plurals.session_notification_ticker,
+                            starredCount,
+                            starredCount))
+                    .setDefaults(Notification.DEFAULT_SOUND | Notification.DEFAULT_VIBRATE)
+                    .setLights(
+                            SessionAlarmService.NOTIFICATION_ARGB_COLOR,
+                            SessionAlarmService.NOTIFICATION_LED_ON_MS,
+                            SessionAlarmService.NOTIFICATION_LED_OFF_MS)
+                    .setSmallIcon(R.drawable.ic_stat_notification)
+                    .setContentIntent(pi)
+                    .setPriority(Notification.PRIORITY_MAX)
+                    .setAutoCancel(true)
+                    .setGroup(GROUP_KEY_NOTIFY_SESSION);
+            if (minutesLeft > 5) {
+                notifBuilder.addAction(R.drawable.ic_alarm_holo_dark,
+                        String.format(res.getString(R.string.snooze_x_min), 5),
+                        createSnoozeIntent(sessionStart, intervalEnd, 5));
+            }
+            if (starredCount == 1 && PrefUtils.isAttendeeAtVenue(this)) {
+                notifBuilder.addAction(R.drawable.ic_map_holo_dark,
+                        res.getString(R.string.title_map),
+                        createRoomMapIntent(starredSessionRoomIds.get(sessionIndex)));
+            }
+            String bigContentTitle = starredSessionTitles.get(sessionIndex);
+
+            NotificationCompat.BigTextStyle richNotification = new NotificationCompat.BigTextStyle(
+                    notifBuilder)
+                    .setBigContentTitle(bigContentTitle)
+                    .bigText(getString(R.string.session_starting_in, starredSessionRoomNames.get(sessionIndex)));
+
+            LOGD(TAG, "Now showing notification.");
+            nm.notify(NOTIFICATION_ID + sessionIndex, richNotification.build());
+        }
     }
 
     private PendingIntent createSnoozeIntent(final long sessionStart, final long sessionEnd,
-            final int snoozeMinutes) {
+                                             final int snoozeMinutes) {
         Intent scheduleIntent = new Intent(
                 SessionAlarmService.ACTION_SCHEDULE_STARRED_BLOCK,
                 null, this, SessionAlarmService.class);
