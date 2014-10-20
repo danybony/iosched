@@ -29,6 +29,7 @@ import android.database.Cursor;
 import android.net.Uri;
 import android.os.Bundle;
 import android.support.v4.app.NotificationCompat;
+import android.support.v4.app.NotificationManagerCompat;
 import android.support.v4.app.TaskStackBuilder;
 import android.util.Log;
 
@@ -54,9 +55,7 @@ import java.util.Date;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
-import static com.google.samples.apps.iosched.util.LogUtils.LOGD;
-import static com.google.samples.apps.iosched.util.LogUtils.LOGE;
-import static com.google.samples.apps.iosched.util.LogUtils.makeLogTag;
+import static com.google.samples.apps.iosched.util.LogUtils.*;
 
 /**
  * Background service to handle scheduling of starred session notification via
@@ -491,8 +490,13 @@ public class SessionAlarmService extends IntentService
         Intent baseIntent = new Intent(this, MyScheduleActivity.class);
         baseIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
 
-        NotificationManager nm = (NotificationManager) getSystemService(
-                Context.NOTIFICATION_SERVICE);
+        NotificationManagerCompat nm = NotificationManagerCompat.from(this);
+
+        int minutesLeft = (int) (sessionStart - currentTime + 59000) / 60000;
+        if (minutesLeft < 1) {
+            minutesLeft = 1;
+        }
+        final Resources res = getResources();
 
         for (int sessionIndex = 0; sessionIndex < starredCount; sessionIndex++) {
             // For a single session, tapping the notification should open the session details (b/15350787)
@@ -503,27 +507,11 @@ public class SessionAlarmService extends IntentService
 
             PendingIntent pi = taskBuilder.getPendingIntent(0, PendingIntent.FLAG_CANCEL_CURRENT);
 
-            final Resources res = getResources();
-            String contentText;
-            int minutesLeft = (int) (sessionStart - currentTime + 59000) / 60000;
-            if (minutesLeft < 1) {
-                minutesLeft = 1;
-            }
-
-            contentText = res.getString(R.string.session_notification_text_1, minutesLeft);
+            String bigContentTitle = starredSessionTitles.get(sessionIndex);
 
             NotificationCompat.Builder notifBuilder = new NotificationCompat.Builder(this)
-                    .setContentTitle(starredSessionTitles.get(0))
-                    .setContentText(contentText)
-                    .setColor(getResources().getColor(R.color.theme_primary))
-                    .setTicker(res.getQuantityString(R.plurals.session_notification_ticker,
-                            starredCount,
-                            starredCount))
+                    .setContentTitle(bigContentTitle)
                     .setDefaults(Notification.DEFAULT_SOUND | Notification.DEFAULT_VIBRATE)
-                    .setLights(
-                            SessionAlarmService.NOTIFICATION_ARGB_COLOR,
-                            SessionAlarmService.NOTIFICATION_LED_ON_MS,
-                            SessionAlarmService.NOTIFICATION_LED_OFF_MS)
                     .setSmallIcon(R.drawable.ic_stat_notification)
                     .setContentIntent(pi)
                     .setPriority(Notification.PRIORITY_MAX)
@@ -539,20 +527,85 @@ public class SessionAlarmService extends IntentService
                         res.getString(R.string.title_map),
                         createRoomMapIntent(starredSessionRoomIds.get(sessionIndex)));
             }
-            String bigContentTitle = starredSessionTitles.get(sessionIndex);
 
             StringBuilder bigTextBuilder = new StringBuilder();
             bigTextBuilder.append(getString(R.string.session_starting_by, starredSessionSpeakers.get(sessionIndex)))
                     .append('\n')
                     .append(getString(R.string.session_starting_in, starredSessionRoomNames.get(sessionIndex)));
-            NotificationCompat.BigTextStyle richNotification = new NotificationCompat.BigTextStyle(
-                    notifBuilder)
+            NotificationCompat.BigTextStyle richNotification = new NotificationCompat.BigTextStyle(notifBuilder)
                     .setBigContentTitle(bigContentTitle)
                     .bigText(bigTextBuilder.toString());
 
-            LOGD(TAG, "Now showing notification.");
-            nm.notify(NOTIFICATION_ID + sessionIndex, richNotification.build());
+            nm.notify(NOTIFICATION_ID + sessionIndex + 1, richNotification.build());
         }
+
+        String summaryText;
+        if (starredCount == 1) {
+            summaryText = res.getString(R.string.session_notification_text_1, minutesLeft);
+        } else {
+            summaryText = res.getQuantityString(R.plurals.session_notification_text,
+                    starredCount - 1,
+                    minutesLeft,
+                    starredCount - 1);
+        }
+
+        TaskStackBuilder taskBuilder2 = TaskStackBuilder.create(this)
+                .addNextIntent(baseIntent);
+        PendingIntent pi2 = taskBuilder2.getPendingIntent(0, PendingIntent.FLAG_CANCEL_CURRENT);
+
+        NotificationCompat.Builder notifBuilder = new NotificationCompat.Builder(this)
+                .setContentTitle("2 new messages")
+                .setContentText(summaryText)
+                .setTicker(res.getQuantityString(R.plurals.session_notification_ticker,
+                        starredCount,
+                        starredCount))
+                .setDefaults(Notification.DEFAULT_SOUND | Notification.DEFAULT_VIBRATE)
+                .setLights(
+                        SessionAlarmService.NOTIFICATION_ARGB_COLOR,
+                        SessionAlarmService.NOTIFICATION_LED_ON_MS,
+                        SessionAlarmService.NOTIFICATION_LED_OFF_MS)
+                .setSmallIcon(R.drawable.ic_stat_notification)
+                .setColor(getResources().getColor(R.color.theme_primary))
+                .setContentIntent(pi2)
+                .setPriority(Notification.PRIORITY_MAX)
+                .setAutoCancel(true)
+                .setGroup(GROUP_KEY_NOTIFY_SESSION)
+                .setLocalOnly(true)
+                .setGroupSummary(true);
+        if (minutesLeft > 5) {
+            notifBuilder.addAction(R.drawable.ic_alarm_holo_dark,
+                    String.format(res.getString(R.string.snooze_x_min), 5),
+                    createSnoozeIntent(sessionStart, intervalEnd, 5));
+        }
+        if (starredCount == 1 && PrefUtils.isAttendeeAtVenue(this)) {
+            notifBuilder.addAction(R.drawable.ic_map_holo_dark,
+                    res.getString(R.string.title_map),
+                    createRoomMapIntent(starredSessionRoomIds.get(0)));
+        }
+        String bigContentTitle;
+        if (starredCount == 1 && starredSessionTitles.size() > 0) {
+            bigContentTitle = starredSessionTitles.get(0);
+        } else {
+            bigContentTitle = res.getQuantityString(R.plurals.session_notification_title,
+                    starredCount,
+                    minutesLeft,
+                    starredCount);
+        }
+        NotificationCompat.InboxStyle richNotification = new NotificationCompat.InboxStyle(
+                notifBuilder)
+                .setBigContentTitle(bigContentTitle);
+        if (starredCount == 1 && starredSessionRoomNames.size() > 0) {
+            // Display only the room name given that the session name is already displayed on the notification title
+            richNotification.addLine(starredSessionRoomNames.get(0));
+        } else {
+            // Adds starred sessions starting at this time block to the notification.
+            for (int i = 0; i < starredCount; i++) {
+                richNotification.addLine(getString(R.string.room_session_notification, starredSessionRoomNames.get(i), starredSessionTitles.get(i)));
+            }
+        }
+
+        nm.notify(NOTIFICATION_ID, notifBuilder.build());
+
     }
 
     private PendingIntent createSnoozeIntent(final long sessionStart, final long sessionEnd,
